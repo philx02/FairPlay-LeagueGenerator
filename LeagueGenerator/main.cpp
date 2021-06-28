@@ -37,43 +37,96 @@ struct League
   std::vector<Team> mTeams;
 };
 
-template<typename	RandomNumberGenerator>
+template<typename RandomNumberGenerator>
 class LeagueIndividual : public IIndividual
 {
 public:
-  LeagueIndividual(League &&iLeague, double iLeagueMean, RandomNumberGenerator &iRng)
+  LeagueIndividual(League &&iLeague, double iLeagueMean, double iNumberOfMuationStdDev, RandomNumberGenerator &iRng)
     : mLeague(std::move(iLeague))
     , mLeagueMean(iLeagueMean)
-    , mTeamSelectionDistro(0, mLeague.mTeams.size() - 1)
+    , mTeamSelectionDistro1(0, mLeague.mTeams.size() - 1)
+    , mTeamSelectionDistro2(0, mLeague.mTeams.size() - 2)
+    , mNumberOfMutationDistro(0, iNumberOfMuationStdDev)
     , mRng(iRng)
   {
   }
 
   double evaluate() final
   {
-    std::vector<double> wTeamMeans;
+    std::vector<double> wTeamGradeMeans;
+    std::vector<double> wTeamFieldDistanceMeans;
+
     for (auto &&wTeam : mLeague.mTeams)
     {
-      wTeamMeans.emplace_back(std::accumulate(std::begin(wTeam.mPlayers), std::end(wTeam.mPlayers), 0.0, [](auto &&iSum, auto &&iPlayer) { return std::move(iSum) + iPlayer->mGrade; }) / wTeam.mPlayers.size());
+      wTeamGradeMeans.emplace_back(std::accumulate(std::begin(wTeam.mPlayers), std::end(wTeam.mPlayers), 0.0, [](auto &&iSum, auto &&iPlayer) { return std::move(iSum) + iPlayer->mGrade; }) / wTeam.mPlayers.size());
+      wTeamFieldDistanceMeans.emplace_back(std::accumulate(std::begin(wTeam.mPlayers), std::end(wTeam.mPlayers), 0.0, [&](auto &&iSum, auto &&iPlayer)
+      {
+        auto &&wFieldDistanceIter = std::find_if(std::begin(iPlayer->mFieldDistances), std::end(iPlayer->mFieldDistances), [&](auto &&iFieldCandidate)
+        {
+          return iFieldCandidate.mField == wTeam.mField;
+        });
+        return std::move(iSum) + wFieldDistanceIter->mDistance;
+      }) / wTeam.mPlayers.size());
     }
-    auto wLeagueVariance = std::accumulate(std::begin(wTeamMeans), std::end(wTeamMeans), 0.0, [&](auto &&iAcc, auto &&iValue)
+
+    auto wLeagueVariance = std::accumulate(std::begin(wTeamGradeMeans), std::end(wTeamGradeMeans), 0.0, [&](auto &&iAcc, auto &&iValue)
     {
       auto wTerm = iValue - mLeagueMean;
-      return std::move(iAcc) + (wTerm * wTerm / (wTeamMeans.size()));
+      return std::move(iAcc) + (wTerm * wTerm / (wTeamGradeMeans.size()));
     });
-    return -wLeagueVariance;
+    auto wLeagueMeanDistances = std::accumulate(std::begin(wTeamFieldDistanceMeans), std::end(wTeamFieldDistanceMeans), 0.0) / wTeamFieldDistanceMeans.size();
+
+    return -(wLeagueVariance + wLeagueMeanDistances);
   }
 
   std::unique_ptr<IIndividual> selfReproduce() final
   {
     auto wLeague = League(mLeague);
-    return std::make_unique<LeagueIndividual>(std::move(wLeague), mLeagueMean, mRng);
+    {
+      auto wNumberOfMutations = static_cast<size_t>(std::abs(mNumberOfMutationDistro(mRng))) + 1;
+      for (size_t wMutationIter = 0; wMutationIter < wNumberOfMutations; ++wMutationIter)
+      {
+        auto wTeam1Index = mTeamSelectionDistro1(mRng);
+        auto wTeam2Index = mTeamSelectionDistro2(mRng);
+        if (wTeam1Index == wTeam2Index)
+        {
+          wTeam1Index = mLeague.mTeams.size() - 1;
+        }
+        Team &wTeam1 = wLeague.mTeams[wTeam1Index];
+        Team &wTeam2 = wLeague.mTeams[wTeam2Index];
+        auto wPlayer1Index = std::uniform_int_distribution<size_t>(0, wTeam1.mPlayers.size() - 1)(mRng);
+        auto wPlayer2Index = std::uniform_int_distribution<size_t>(0, wTeam2.mPlayers.size() - 1)(mRng);
+        std::swap(wTeam1.mPlayers[wPlayer1Index], wTeam2.mPlayers[wPlayer2Index]);
+      }
+    }
+    {
+      auto wNumberOfMutations = static_cast<size_t>(std::abs(mNumberOfMutationDistro(mRng) / 10.0));
+      for (size_t wMutationIter = 0; wMutationIter < wNumberOfMutations; ++wMutationIter)
+      {
+        auto wOddsOfPickingFromRemainingFields = wLeague.mRemainingFields.size() / (wLeague.mRemainingFields.size() + wLeague.mTeams.size());
+        if (std::uniform_real_distribution<>(0.0, 1.0)(mRng) <= wOddsOfPickingFromRemainingFields)
+        {
+          auto wTeamIndex = mTeamSelectionDistro1(mRng);
+          auto wRemainingFieldIndex = std::uniform_int_distribution<size_t>(0, wLeague.mRemainingFields.size() - 1)(mRng);
+          std::swap(wLeague.mTeams[wTeamIndex].mField, wLeague.mRemainingFields[wRemainingFieldIndex]);
+        }
+        else
+        {
+          auto wTeam1Index = mTeamSelectionDistro1(mRng);
+          auto wTeam2Index = mTeamSelectionDistro2(mRng);
+          std::swap(wLeague.mTeams[wTeam1Index].mField, wLeague.mTeams[wTeam2Index].mField);
+        }
+      }
+    }
+    return std::make_unique<LeagueIndividual>(std::move(wLeague), mLeagueMean, mNumberOfMutationDistro.stddev(), mRng);
   }
 
 private:
   League mLeague;
   double mLeagueMean;
-  std::uniform_int_distribution<size_t> mTeamSelectionDistro;
+  std::uniform_int_distribution<size_t> mTeamSelectionDistro1;
+  std::uniform_int_distribution<size_t> mTeamSelectionDistro2;
+  std::normal_distribution<> mNumberOfMutationDistro;
   RandomNumberGenerator &mRng;
 };
 
@@ -106,7 +159,7 @@ std::vector<Player> generatePlayers(const std::vector<Field> &iFields, RandomNum
 }
 
 template<typename RandomNumberGenerator>
-std::unique_ptr<LeagueIndividual<RandomNumberGenerator>> generateLeagueIndividual(const std::vector<Player> &iPlayers, const std::vector<Field> &iFields, size_t iNumberOfTeams, double iLeagueMean, RandomNumberGenerator &iRng)
+std::unique_ptr<LeagueIndividual<RandomNumberGenerator>> generateLeagueIndividual(const std::vector<Player> &iPlayers, const std::vector<Field> &iFields, size_t iNumberOfTeams, double iLeagueMean, double iNumberOfMuationStdDev, RandomNumberGenerator &iRng)
 {
   std::vector<const Player *> wPlayersPtr;
   std::transform(std::begin(iPlayers), std::end(iPlayers), std::back_inserter(wPlayersPtr), [&](const Player &iPlayer)
@@ -137,7 +190,7 @@ std::unique_ptr<LeagueIndividual<RandomNumberGenerator>> generateLeagueIndividua
   }
   wLeague.mRemainingFields = wFieldsPtr;
 
-  return std::make_unique<LeagueIndividual<RandomNumberGenerator>>(std::move(wLeague), iLeagueMean, iRng);
+  return std::make_unique<LeagueIndividual<RandomNumberGenerator>>(std::move(wLeague), iLeagueMean, iNumberOfMuationStdDev, iRng);
 }
 
 int main()
@@ -164,13 +217,14 @@ int main()
 
   auto wGenAlgo = GeneticAlgorithm(0.25, wRng, 10.0, 100, [&]()
   {
-    return generateLeagueIndividual(wPlayers, wFields, wNumberOfTeams, wLeagueMean, wRng);
+    return generateLeagueIndividual(wPlayers, wFields, wNumberOfTeams, wLeagueMean, 15.0, wRng);
   });
 
-  for (size_t wIter = 0; wIter < 100; ++wIter)
+  for (size_t wIter = 0; wIter < 1000; ++wIter)
   {
     wGenAlgo.doOneGeneration();
   }
+  wGenAlgo.doOneGeneration();
 
   return 0;
 }

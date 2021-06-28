@@ -4,6 +4,7 @@
 #include <memory>
 #include <algorithm>
 #include <random>
+#include <optional>
 
 class IIndividual
 {
@@ -25,7 +26,7 @@ public:
   {
     while (mPopulation.size() < mMaxPopulationSize)
     {
-      mPopulation.emplace_back(iIndividualGenerator(), 0.0);
+      mPopulation.emplace_back(iIndividualGenerator());
     }
   }
 
@@ -33,12 +34,15 @@ public:
   {
     for (auto &&wElement : mPopulation)
     {
-      wElement.mScore = wElement.mIndividual->evaluate();
+      if (!wElement.mScore.has_value())
+      {
+        wElement.mScore = wElement.mIndividual->evaluate();
+      }
     }
 
     std::sort(std::begin(mPopulation), std::end(mPopulation), [](auto &&iLeft, auto &&iRight)
     {
-      return iLeft.mScore > iRight.mScore;
+      return *iLeft.mScore > *iRight.mScore;
     });
     auto wNumberOfSurvivors = static_cast<size_t>(mPopulation.size() * mInterGenerationalSurvivalRate);
     mPopulation.resize(wNumberOfSurvivors);
@@ -46,7 +50,7 @@ public:
     while (mPopulation.size() < mMaxPopulationSize)
     {
       auto wSelectionIndex = std::clamp(static_cast<size_t>(std::abs(mSelectionDistribution(mRng))), size_t(0), wNumberOfSurvivors - 1);
-      mPopulation.emplace_back(mPopulation[wSelectionIndex].mIndividual->selfReproduce(), 0.0);
+      mPopulation.emplace_back(mPopulation[wSelectionIndex].mIndividual->selfReproduce());
     }
   }
 
@@ -54,7 +58,7 @@ private:
   struct ScoredIndividual
   {
     std::unique_ptr<IIndividual> mIndividual;
-    double mScore;
+    std::optional<double> mScore;
   };
   std::vector<ScoredIndividual> mPopulation;
   double mInterGenerationalSurvivalRate;
